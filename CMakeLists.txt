@@ -1,0 +1,103 @@
+cmake_minimum_required(VERSION 3.16)
+project(TextEditor VERSION 1.1 LANGUAGES C CXX)
+# Optimised build unless the caller chose a type (single-config generators only;
+# Visual Studio / Xcode pick the configuration at build time).
+get_property(_editor_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT _editor_multi_config AND NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+  message(STATUS "CMAKE_BUILD_TYPE not set, using Release")
+endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(EDITOR_QT_MAJOR "6" CACHE STRING "Qt major version (5 for Windows 7, or 6)")
+if(NOT EDITOR_QT_MAJOR MATCHES "^[56]$")
+  message(FATAL_ERROR "EDITOR_QT_MAJOR must be 5 or 6")
+endif()
+find_package(Qt${EDITOR_QT_MAJOR} REQUIRED COMPONENTS Widgets)
+include(FetchContent)
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
+FetchContent_Declare(ts URL https://codeload.github.com/tree-sitter/tree-sitter/tar.gz/refs/tags/v0.20.8 URL_HASH SHA256=6181ede0b7470bfca37e293e7d5dc1d16469b9485d13f13a605baec4a8b1f791)
+FetchContent_Declare(cpp URL https://codeload.github.com/tree-sitter/tree-sitter-cpp/tar.gz/refs/tags/v0.20.3 URL_HASH SHA256=1c2c32c8875229e264bf86afd04537e2470bb1d259865e2694bf05d8d107c65f)
+FetchContent_Declare(json URL https://codeload.github.com/tree-sitter/tree-sitter-json/tar.gz/refs/tags/v0.20.2 URL_HASH SHA256=95e948ce3186a337d56affa900fc6fc47fa7331d4594b005de7b9019bf1d821c)
+FetchContent_MakeAvailable(ts cpp json)
+add_library(cpp_grammar OBJECT ${cpp_SOURCE_DIR}/src/parser.c ${cpp_SOURCE_DIR}/src/scanner.c)
+add_library(json_grammar OBJECT ${json_SOURCE_DIR}/src/parser.c)
+set_target_properties(cpp_grammar json_grammar PROPERTIES AUTOMOC OFF C_STANDARD 99)
+# Generated lexer macros must come from each grammar's own parser header.
+target_include_directories(cpp_grammar PRIVATE ${cpp_SOURCE_DIR}/src)
+target_include_directories(json_grammar PRIVATE ${json_SOURCE_DIR}/src)
+add_library(editor_parser STATIC ${ts_SOURCE_DIR}/lib/src/lib.c $<TARGET_OBJECTS:cpp_grammar> $<TARGET_OBJECTS:json_grammar>)
+set_target_properties(editor_parser PROPERTIES AUTOMOC OFF C_STANDARD 99)
+target_include_directories(editor_parser PUBLIC ${ts_SOURCE_DIR}/lib/include PRIVATE ${ts_SOURCE_DIR}/lib/src)
+add_library(editor_core
+  src/editor.cpp src/editor.h
+  src/encoding.cpp src/encoding.h src/encoding_tables.h
+  src/encoding_qt.cpp src/encoding_qt.h
+  src/fileio.cpp src/fileio.h
+  src/highlighter.cpp src/highlighter.h
+  src/rules.cpp src/rules.h
+  src/settings.cpp src/settings.h
+  src/searchpanel.cpp src/searchpanel.h
+  src/searchindex.cpp src/searchindex.h src/matchindex.h
+  src/overviewruler.cpp src/overviewruler.h
+  src/theme.cpp src/theme.h
+  src/startup.cpp src/startup.h
+  src/dialogs.cpp src/dialogs.h
+  src/window.cpp src/window.h)
+target_link_libraries(editor_core PUBLIC Qt${EDITOR_QT_MAJOR}::Widgets editor_parser)
+target_include_directories(editor_core PUBLIC src)
+# Extra encodings (Chinese, Japanese, Korean...) come from QTextCodec: built into Qt 5,
+# and in Qt 6 provided by the optional "Qt 5 Compatibility Module" (Core5Compat).
+if(EDITOR_QT_MAJOR STREQUAL "6")
+  find_package(Qt6 QUIET COMPONENTS Core5Compat)
+  if(Qt6Core5Compat_FOUND)
+    target_link_libraries(editor_core PUBLIC Qt6::Core5Compat)
+    target_compile_definitions(editor_core PUBLIC EDITOR_HAVE_TEXTCODEC=1)
+  else()
+    message(STATUS "Qt6 Core5Compat not found: East Asian encodings will not be offered")
+  endif()
+else()
+  target_compile_definitions(editor_core PUBLIC EDITOR_HAVE_TEXTCODEC=1)
+endif()
+if(WIN32)
+  target_compile_definitions(editor_parser PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+  target_compile_definitions(editor_core PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+endif()
+add_executable(text_editor WIN32 src/main.cpp)
+target_link_libraries(text_editor PRIVATE editor_core)
+if(WIN32)
+  set_target_properties(text_editor PROPERTIES OUTPUT_NAME windows)
+  target_compile_definitions(text_editor PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+endif()
+if(MSVC)
+  target_compile_options(editor_core PRIVATE /utf-8)
+endif()
+include(CTest)
+if(BUILD_TESTING)
+  find_package(Qt${EDITOR_QT_MAJOR} REQUIRED COMPONENTS Test)
+  add_executable(editor_tests tests/editor_tests.cpp)
+  target_link_libraries(editor_tests PRIVATE editor_core Qt${EDITOR_QT_MAJOR}::Test)
+  if(MSVC)
+    target_compile_options(editor_tests PRIVATE /utf-8)
+  endif()
+  add_executable(encoding_tests tests/encoding_tests.cpp src/encoding.cpp)
+  target_include_directories(encoding_tests PRIVATE src)
+  if(MSVC)
+    target_compile_options(encoding_tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME encoding_tests COMMAND encoding_tests)
+  add_executable(ruler_tests tests/ruler_tests.cpp)
+  target_include_directories(ruler_tests PRIVATE src)
+  add_test(NAME ruler_tests COMMAND ruler_tests)
+  add_test(NAME editor_tests COMMAND editor_tests -platform offscreen)
+  set_tests_properties(editor_tests PROPERTIES TIMEOUT 30)
+endif()
+install(TARGETS text_editor RUNTIME DESTINATION bin)
+install(DIRECTORY ColorProfiles DESTINATION share/text_editor)
+install(FILES ${ts_SOURCE_DIR}/LICENSE DESTINATION share/text_editor/licenses RENAME tree-sitter.txt)
+install(FILES ${cpp_SOURCE_DIR}/LICENSE DESTINATION share/text_editor/licenses RENAME tree-sitter-cpp.txt)
+install(FILES ${json_SOURCE_DIR}/LICENSE DESTINATION share/text_editor/licenses RENAME tree-sitter-json.txt)

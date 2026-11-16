@@ -1,0 +1,15 @@
+[blocks]
+size=0
+
+[phrases]
+size=5
+1\text=true
+1\color=#d33682
+2\text=false
+2\color=#d33682
+3\text=null
+3\color=#d33682
+4\text=http://
+4\color=#2aa198
+5\text=https://
+5\color=#2aa198
